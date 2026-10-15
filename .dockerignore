@@ -4,10 +4,10 @@ input/*
 !input/.gitkeep
 output/*
 !output/.gitkeep
-cycle-diffusion/ckpts/*
-!cycle-diffusion/ckpts/.gitkeep
-cycle-diffusion/data
-cycle-diffusion/docs
+cycle-diffusion-for-anime-face/ckpts/*
+!cycle-diffusion-for-anime-face/ckpts/.gitkeep
+cycle-diffusion-for-anime-face/data
+cycle-diffusion-for-anime-face/docs
 SIBR_viewers
 **/__pycache__
 **/*.pyc

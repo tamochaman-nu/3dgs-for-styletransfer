@@ -43,8 +43,8 @@ WORKDIR /workspace
 COPY . /workspace
 
 # Build the CUDA rasterizer/kNN/SSIM extensions into site-packages (not editable),
-# so they stay intact even when ./input, ./output, and cycle-diffusion/ckpts are
-# bind-mounted over the corresponding paths at runtime.
+# so they stay intact even when ./input, ./output, and cycle-diffusion-for-anime-face/ckpts
+# are bind-mounted over the corresponding paths at runtime.
 # --no-build-isolation: their setup.py imports torch directly at build time, but
 # doesn't declare it as a PEP517 build requirement, so pip's isolated build venv
 # wouldn't see the torch we just installed above.

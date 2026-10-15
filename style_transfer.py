@@ -288,7 +288,7 @@ def main():
                               "built-in types (celeba256, ffhq256, bedroom256, church_outdoor256, "
                               "afhqcat256, afhqdog256, afhqwild256, imagenet512), or any other name "
                               "to use a custom checkpoint (requires --source_model_path and a matching "
-                              "cycle-diffusion/ckpts/ddpm/configs/<name>.yml, e.g. ffhq_custom)")
+                              "cycle-diffusion-for-anime-face/ckpts/ddpm/configs/<name>.yml, e.g. ffhq_custom)")
     parser.add_argument("--source_model_path", type=str, default=None,
                          help="Required for afhq* domains and any custom (non-built-in) model type; "
                               "omit for built-in types with a default checkpoint path")

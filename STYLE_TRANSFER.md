@@ -44,7 +44,7 @@ view-dependent color (which would show up as floaters/artifacts).
   unless `--skip_colmap` is passed — re-running with a different `--input_dir`,
   `--input_video`, or `--video_*` slicing without `--skip_colmap` always reflects
   the new input, it never silently reuses a stale dataset from an earlier run.
-- `cycle-diffusion/ckpts/` — cycle-diffusion checkpoints (see below). Mounted so you
+- `cycle-diffusion-for-anime-face/ckpts/` — cycle-diffusion checkpoints (see below). Mounted so you
   can add/swap checkpoints without rebuilding the image.
 
 ## cycle-diffusion DDPM checkpoints
@@ -52,9 +52,9 @@ view-dependent color (which would show up as floaters/artifacts).
 The DDPM/DDIM unpaired-translation path needs **two separately-trained** diffusion
 checkpoints: one for the domain that matches your input photos (source) and one for
 the style you want to translate into (target). Follow cycle-diffusion's own
-["Pre-trained diffusion models"](cycle-diffusion/README.md) section to download
+["Pre-trained diffusion models"](cycle-diffusion-for-anime-face/README.md) section to download
 checkpoints (and, for `afhqcat256`/`afhqdog256`/`afhqwild256`, the shared
-`configs.zip`) into `cycle-diffusion/ckpts/ddpm/` (and `cycle-diffusion/ckpts/ddpm/configs/`).
+`configs.zip`) into `cycle-diffusion-for-anime-face/ckpts/ddpm/` (and `cycle-diffusion-for-anime-face/ckpts/ddpm/configs/`).
 
 Built-in domain types (`--source_model_type` / `--target_model_type`):
 `celeba256`, `ffhq256`, `bedroom256`, `church_outdoor256`, `imagenet512` (default
@@ -65,14 +65,14 @@ There is no general-purpose "any photo, any style" checkpoint here — the sourc
 target domains must each have a dedicated pretrained DDPM. If your scene content or
 desired style doesn't match one of the domains above, you'll need to train your own
 DDPM checkpoint on that domain (see cycle-diffusion's upstream training references)
-and place it under `cycle-diffusion/ckpts/ddpm/` alongside a matching config yaml.
+and place it under `cycle-diffusion-for-anime-face/ckpts/ddpm/` alongside a matching config yaml.
 
 ### Custom domains (e.g. a self-trained anime-face checkpoint)
 
 `model/gan_wrapper/ddpm_ddim_wrapper.py`'s `prepare_ddpm_ddim()` only recognizes the
 built-in type names above; anything else is treated as a **custom domain**: pass
 `--source_model_path`/`--target_model_path` explicitly, and cycle-diffusion looks for
-a config at `cycle-diffusion/ckpts/ddpm/configs/<model_type>.yml` (this fallback is a
+a config at `cycle-diffusion-for-anime-face/ckpts/ddpm/configs/<model_type>.yml` (this fallback is a
 local patch to the vendored submodule — it won't survive a
 `git submodule update --remote` from upstream cycle-diffusion; re-apply the small
 `else` branch in `prepare_ddpm_ddim()` if you ever re-sync from upstream).
@@ -108,10 +108,10 @@ looks like noise/scribble, try the other setting first.
 Two example configs are included for an ffhq→anime setup using custom checkpoints
 that match the `CUSTOM_FACE256` preset above (both `data.dataset: CUSTOM_FACE256`,
 `diffusion.beta_schedule: cosine`):
-- `cycle-diffusion/ckpts/ddpm/configs/ffhq_custom.yml` (source)
-- `cycle-diffusion/ckpts/ddpm/configs/anime.yml` (target/style)
+- `cycle-diffusion-for-anime-face/ckpts/ddpm/configs/ffhq_custom.yml` (source)
+- `cycle-diffusion-for-anime-face/ckpts/ddpm/configs/anime.yml` (target/style)
 
-Drop your two checkpoints under `cycle-diffusion/ckpts/ddpm/` and run (paths below
+Drop your two checkpoints under `cycle-diffusion-for-anime-face/ckpts/ddpm/` and run (paths below
 match this repo's actual `ffhq400000.pt` / `anime400000.pt`, already verified to load
 and to produce coherent, non-garbage output on a real photo):
 
@@ -122,7 +122,7 @@ docker compose run --rm style-transfer \
   --iterations 30000 --style_iterations 3000
 ```
 
-(`--source_model_path`/`--target_model_path` are resolved relative to `cycle-diffusion/`,
+(`--source_model_path`/`--target_model_path` are resolved relative to `cycle-diffusion-for-anime-face/`,
 matching where cycle-diffusion's own built-in checkpoints live.)
 
 **Stylization strength**: the verification run above (default `--sample_type ddim

@@ -1,11 +1,12 @@
 """Bridge between the trained Gaussians' rendered views and cycle-diffusion's
 unpaired DDPM/DDIM domain translation (model/gan_wrapper/ddpm_ddim_wrapper.py).
 
-cycle-diffusion is vendored as a git submodule at ../cycle-diffusion. Its DDPM/DDIM
-translation needs two separately-trained diffusion checkpoints: one for the source
-(content) domain and one for the target (style) domain. Both must be placed under
-cycle-diffusion/ckpts/ddpm/ (weights + the matching config yaml under
-cycle-diffusion/ckpts/ddpm/configs/), following cycle-diffusion's own README.
+cycle-diffusion is vendored as a git submodule at ../cycle-diffusion-for-anime-face.
+Its DDPM/DDIM translation needs two separately-trained diffusion checkpoints: one for
+the source (content) domain and one for the target (style) domain. Both must be
+placed under cycle-diffusion-for-anime-face/ckpts/ddpm/ (weights + the matching
+config yaml under cycle-diffusion-for-anime-face/ckpts/ddpm/configs/), following
+cycle-diffusion's own README.
 """
 
 import os
@@ -15,7 +16,7 @@ import torch
 import torch.nn.functional as F
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_CYCLE_DIFFUSION_ROOT = os.path.join(_REPO_ROOT, "cycle-diffusion")
+_CYCLE_DIFFUSION_ROOT = os.path.join(_REPO_ROOT, "cycle-diffusion-for-anime-face")
 
 # cycle-diffusion has its own top-level "utils" package, which would otherwise
 # shadow this repo's utils/ package for every later `import utils.xxx` in the
