@@ -1,0 +1,15 @@
+**/.git
+**/.gitmodules
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+cycle-diffusion/ckpts/*
+!cycle-diffusion/ckpts/.gitkeep
+cycle-diffusion/data
+cycle-diffusion/docs
+SIBR_viewers
+**/__pycache__
+**/*.pyc
+**/build
+**/*.egg-info

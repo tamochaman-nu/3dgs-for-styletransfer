@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile style_transfer.py)",
+      "Bash(tee /tmp/claude-1000/-home-xr-3dgs-for-styletransfer/b4310d4b-71e1-4023-9151-82fd5d0d3d62/scratchpad/docker_build12.log)",
+      "Bash(python3 -m py_compile style_transfer.py convert.py)",
+      "Bash(tee /tmp/claude-1000/-home-xr-3dgs-for-styletransfer/b4310d4b-71e1-4023-9151-82fd5d0d3d62/scratchpad/docker_build13.log)",
+      "Bash(python3 -m py_compile /home/xr/3dgs-for-styletransfer/style_transfer.py)",
+      "Bash(tee /tmp/claude-1000/-home-xr-3dgs-for-styletransfer/b4310d4b-71e1-4023-9151-82fd5d0d3d62/scratchpad/docker_build14.log)",
+      "Bash(tee /tmp/claude-1000/-home-xr-3dgs-for-styletransfer/b4310d4b-71e1-4023-9151-82fd5d0d3d62/scratchpad/docker_build15.log)",
+      "Bash(python3 -m py_compile convert.py)",
+      "Bash(tee /tmp/claude-1000/-home-xr-3dgs-for-styletransfer/b4310d4b-71e1-4023-9151-82fd5d0d3d62/scratchpad/docker_build16.log)",
+      "Bash(tee /tmp/claude-1000/-home-xr-3dgs-for-styletransfer/b4310d4b-71e1-4023-9151-82fd5d0d3d62/scratchpad/docker_build17.log)",
+      "Bash(git config *)"
+    ]
+  }
+}

@@ -11,8 +11,19 @@
 
 import os
 import logging
+import shlex
+import subprocess
 from argparse import ArgumentParser
 import shutil
+
+
+def run_cmd(cmd):
+    # os.system()'s return value is a raw wait status, not the subprocess's actual
+    # exit code (e.g. a real exit code of 1 comes back as 256), so checking it with
+    # `!= 0` and forwarding it straight to exit() silently produces a 0 (success)
+    # process exit code for callers even when the command genuinely failed.
+    # subprocess.run()'s returncode is already the real exit code.
+    return subprocess.run(shlex.split(cmd)).returncode
 
 # This Python script is based on the shell converter script provided in the MipNerF 360 repository.
 parser = ArgumentParser("Colmap converter")
@@ -20,6 +31,10 @@ parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--skip_matching", action='store_true')
 parser.add_argument("--source_path", "-s", required=True, type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
+parser.add_argument("--matcher", default="exhaustive", choices=["exhaustive", "sequential"],
+                     help="exhaustive: match every image pair, best for unordered stills. "
+                          "sequential: match nearby frames in filename order, best (and much "
+                          "faster) for frames extracted from a continuous video sweep.")
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
 parser.add_argument("--magick_executable", default="", type=str)
@@ -38,16 +53,17 @@ if not args.skip_matching:
         --ImageReader.single_camera 1 \
         --ImageReader.camera_model " + args.camera + " \
         --SiftExtraction.use_gpu " + str(use_gpu)
-    exit_code = os.system(feat_extracton_cmd)
+    exit_code = run_cmd(feat_extracton_cmd)
     if exit_code != 0:
         logging.error(f"Feature extraction failed with code {exit_code}. Exiting.")
         exit(exit_code)
 
     ## Feature matching
-    feat_matching_cmd = colmap_command + " exhaustive_matcher \
+    matcher_command = args.matcher + "_matcher"
+    feat_matching_cmd = colmap_command + " " + matcher_command + " \
         --database_path " + args.source_path + "/distorted/database.db \
         --SiftMatching.use_gpu " + str(use_gpu)
-    exit_code = os.system(feat_matching_cmd)
+    exit_code = run_cmd(feat_matching_cmd)
     if exit_code != 0:
         logging.error(f"Feature matching failed with code {exit_code}. Exiting.")
         exit(exit_code)
@@ -60,7 +76,7 @@ if not args.skip_matching:
         --image_path "  + args.source_path + "/input \
         --output_path "  + args.source_path + "/distorted/sparse \
         --Mapper.ba_global_function_tolerance=0.000001")
-    exit_code = os.system(mapper_cmd)
+    exit_code = run_cmd(mapper_cmd)
     if exit_code != 0:
         logging.error(f"Mapper failed with code {exit_code}. Exiting.")
         exit(exit_code)
@@ -72,7 +88,7 @@ img_undist_cmd = (colmap_command + " image_undistorter \
     --input_path " + args.source_path + "/distorted/sparse/0 \
     --output_path " + args.source_path + "\
     --output_type COLMAP")
-exit_code = os.system(img_undist_cmd)
+exit_code = run_cmd(img_undist_cmd)
 if exit_code != 0:
     logging.error(f"Mapper failed with code {exit_code}. Exiting.")
     exit(exit_code)
@@ -102,21 +118,21 @@ if(args.resize):
 
         destination_file = os.path.join(args.source_path, "images_2", file)
         shutil.copy2(source_file, destination_file)
-        exit_code = os.system(magick_command + " mogrify -resize 50% " + destination_file)
+        exit_code = run_cmd(magick_command + " mogrify -resize 50% " + destination_file)
         if exit_code != 0:
             logging.error(f"50% resize failed with code {exit_code}. Exiting.")
             exit(exit_code)
 
         destination_file = os.path.join(args.source_path, "images_4", file)
         shutil.copy2(source_file, destination_file)
-        exit_code = os.system(magick_command + " mogrify -resize 25% " + destination_file)
+        exit_code = run_cmd(magick_command + " mogrify -resize 25% " + destination_file)
         if exit_code != 0:
             logging.error(f"25% resize failed with code {exit_code}. Exiting.")
             exit(exit_code)
 
         destination_file = os.path.join(args.source_path, "images_8", file)
         shutil.copy2(source_file, destination_file)
-        exit_code = os.system(magick_command + " mogrify -resize 12.5% " + destination_file)
+        exit_code = run_cmd(magick_command + " mogrify -resize 12.5% " + destination_file)
         if exit_code != 0:
             logging.error(f"12.5% resize failed with code {exit_code}. Exiting.")
             exit(exit_code)
