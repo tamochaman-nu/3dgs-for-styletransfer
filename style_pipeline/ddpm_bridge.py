@@ -1,12 +1,17 @@
 """Bridge between the trained Gaussians' rendered views and cycle-diffusion's
-unpaired DDPM/DDIM domain translation (model/gan_wrapper/ddpm_ddim_wrapper.py).
+unpaired DDPM/DDIM domain translation (pipeline/generic_ddpm_wrapper.py).
 
 cycle-diffusion is vendored as a git submodule at ../cycle-diffusion-for-anime-face.
 Its DDPM/DDIM translation needs two separately-trained diffusion checkpoints: one for
-the source (content) domain and one for the target (style) domain. Both must be
-placed under cycle-diffusion-for-anime-face/ckpts/ddpm/ (weights + the matching
-config yaml under cycle-diffusion-for-anime-face/ckpts/ddpm/configs/), following
-cycle-diffusion's own README.
+the source (content) domain and one for the target (style) domain. Both are expected
+to be the "oneres-cosine" checkpoint pair (ckpts/ddpm/ffhq-oneres-cosine-020000.pt /
+anime-oneres-cosine-020000.pt in the submodule): a 256-channel UNet with
+num_res_blocks=1 and a cosine noise schedule, reverse-engineered from the checkpoint
+tensors in cycle-diffusion-for-anime-face/pipeline/step_e12_translate_matched_arch.py's
+module docstring. This architecture has no i_DDPM() preset in
+model/lib/ddpm_ddim/models/improved_ddpm/script_util.py, so GenericDDPMWrapper
+(which builds the UNet directly from explicit arch kwargs) is used instead of
+model/gan_wrapper/ddpm_ddim_wrapper.py's DDPMDDIMWrapper.
 """
 
 import os
@@ -24,9 +29,21 @@ _CYCLE_DIFFUSION_ROOT = os.path.join(_REPO_ROOT, "cycle-diffusion-for-anime-face
 _saved_sys_path = list(sys.path)
 sys.path.insert(0, _CYCLE_DIFFUSION_ROOT)
 try:
-    from model.gan_wrapper.ddpm_ddim_wrapper import DDPMDDIMWrapper  # noqa: E402
+    from pipeline.generic_ddpm_wrapper import GenericDDPMWrapper  # noqa: E402
 finally:
     sys.path[:] = _saved_sys_path
+
+# Architecture of the ffhq-oneres-cosine-020000.pt / anime-oneres-cosine-020000.pt
+# checkpoint pair: same 256-channel UNet as cycle-diffusion's flagship
+# ffhq512_*/anime_aligned_curated_* checkpoints, but with num_res_blocks reduced
+# from 2 to 1 (see pipeline/step_e12_translate_matched_arch.py's module docstring
+# and its --*_arch_num_res_blocks/--*_beta_schedule override example).
+_ONERES_COSINE_ARCH_KWARGS = dict(
+    arch_num_channels=256, arch_num_res_blocks=1, arch_attention_resolutions="32,16,8",
+    arch_num_heads=4, arch_num_head_channels=-1, arch_channel_mult="",
+    arch_dropout=0.0, arch_resblock_updown=False, arch_use_scale_shift_norm=True,
+    arch_class_cond=False, arch_learn_sigma=True,
+)
 
 
 class DDPMStyleTransfer:
@@ -35,25 +52,29 @@ class DDPMStyleTransfer:
     the target-domain (style) model.
     """
 
-    def __init__(self, source_model_type, target_model_type, source_model_path=None,
-                 target_model_path=None, sample_type="ddim", custom_steps=1000, eta=0.1,
+    def __init__(self, source_model_path, target_model_path,
+                 sample_type="ddim", custom_steps=1000, eta=0.1,
                  refine_steps=100, es_steps=850, t_0=None, device="cuda"):
         self.device = device
 
+        def build(model_path):
+            return GenericDDPMWrapper(
+                model_path=model_path, image_size=256, channels=3,
+                arch_kwargs=_ONERES_COSINE_ARCH_KWARGS,
+                beta_schedule="cosine", beta_start=0.0001, beta_end=0.02,
+                num_diffusion_timesteps=1000,
+                sample_type=sample_type, custom_steps=custom_steps, es_steps=es_steps,
+                eta=eta, t_0=t_0, refine_steps=refine_steps,
+            ).to(self.device).eval()
+
         cwd = os.getcwd()
         try:
-            # ddpm_ddim_wrapper resolves checkpoint/config paths relative to cwd.
+            # Checkpoint paths (e.g. ckpts/ddpm/ffhq-oneres-cosine-020000.pt) are
+            # resolved relative to the submodule root, matching DDPMDDIMWrapper's
+            # existing convention.
             os.chdir(_CYCLE_DIFFUSION_ROOT)
-            self.source = DDPMDDIMWrapper(
-                source_model_type=source_model_type, source_model_path=source_model_path,
-                sample_type=sample_type, custom_steps=custom_steps, eta=eta,
-                refine_steps=refine_steps, es_steps=es_steps, t_0=t_0,
-            ).to(device).eval()
-            self.target = DDPMDDIMWrapper(
-                source_model_type=target_model_type, source_model_path=target_model_path,
-                sample_type=sample_type, custom_steps=custom_steps, eta=eta,
-                refine_steps=refine_steps, es_steps=es_steps, t_0=t_0,
-            ).to(device).eval()
+            self.source = build(source_model_path)
+            self.target = build(target_model_path)
         finally:
             os.chdir(cwd)
 

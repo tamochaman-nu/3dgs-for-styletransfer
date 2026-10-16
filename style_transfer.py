@@ -30,6 +30,7 @@ from tqdm import tqdm
 from arguments import ModelParams, OptimizationParams, PipelineParams
 from gaussian_renderer import render
 from scene import GaussianModel, Scene
+from style_pipeline.background_removal import remove_background_dir
 from style_pipeline.ddpm_bridge import DDPMStyleTransfer
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
@@ -45,6 +46,7 @@ DEFAULT_INPUT_DIR = "/workspace/input"
 DEFAULT_OUTPUT_DIR = "/workspace/output"
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
 
 
 VIDEO_ROTATE_FILTERS = {
@@ -53,6 +55,39 @@ VIDEO_ROTATE_FILTERS = {
     180: "transpose=1,transpose=1",  # 180 deg
     270: "transpose=2",              # 90 deg counter-clockwise (= 270 deg clockwise)
 }
+
+
+def _ffmpeg_extract_frames(video_path: str, out_dir: str, fps: float,
+                            start: float, end: float, rotate: int, prefix: str = ""):
+    """Run ffmpeg to slice a single video into out_dir/{prefix}frame_%05d.jpg.
+    Shared by extract_video_frames (single video) and extract_video_frames_dir
+    (one call per video, with prefix set to the video's stem so frames from
+    different cameras/files don't collide in the shared out_dir)."""
+    vf = f"fps={fps}"
+    if VIDEO_ROTATE_FILTERS[rotate]:
+        vf += "," + VIDEO_ROTATE_FILTERS[rotate]
+
+    cmd = [
+        "ffmpeg", "-y", "-i", video_path,
+        *(["-ss", str(start)] if start is not None else []),
+        *(["-to", str(end)] if end is not None else []),
+        "-vf", vf,
+        "-qscale:v", "2",
+        os.path.join(out_dir, f"{prefix}frame_%05d.jpg"),
+    ]
+    print("[video] extracting frames:", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+
+def _subsample_frames(out_dir: str, max_frames: int):
+    """Evenly subsample out_dir down to at most max_frames files, deleting the rest."""
+    frames = sorted(os.listdir(out_dir))
+    if max_frames is not None and len(frames) > max_frames:
+        keep_idx = {round(i * (len(frames) - 1) / (max_frames - 1)) for i in range(max_frames)}
+        for i, name in enumerate(frames):
+            if i not in keep_idx:
+                os.remove(os.path.join(out_dir, name))
+        print(f"[video] subsampled down to {max_frames} frames")
 
 
 def extract_video_frames(video_path: str, out_dir: str, fps: float,
@@ -78,32 +113,63 @@ def extract_video_frames(video_path: str, out_dir: str, fps: float,
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)
 
-    vf = f"fps={fps}"
-    if VIDEO_ROTATE_FILTERS[rotate]:
-        vf += "," + VIDEO_ROTATE_FILTERS[rotate]
-
-    cmd = [
-        "ffmpeg", "-y", "-i", video_path,
-        *(["-ss", str(start)] if start is not None else []),
-        *(["-to", str(end)] if end is not None else []),
-        "-vf", vf,
-        "-qscale:v", "2",
-        os.path.join(out_dir, "frame_%05d.jpg"),
-    ]
-    print("[video] extracting frames:", " ".join(cmd))
-    subprocess.run(cmd, check=True)
-
-    frames = sorted(os.listdir(out_dir))
-    print(f"[video] extracted {len(frames)} frames at {fps} fps")
-
-    if max_frames is not None and len(frames) > max_frames:
-        keep_idx = {round(i * (len(frames) - 1) / (max_frames - 1)) for i in range(max_frames)}
-        for i, name in enumerate(frames):
-            if i not in keep_idx:
-                os.remove(os.path.join(out_dir, name))
-        print(f"[video] subsampled down to {max_frames} frames")
+    _ffmpeg_extract_frames(video_path, out_dir, fps, start, end, rotate)
+    print(f"[video] extracted {len(os.listdir(out_dir))} frames at {fps} fps")
+    _subsample_frames(out_dir, max_frames)
 
     return out_dir
+
+
+def extract_video_frames_dir(video_dir: str, out_dir: str, fps: float,
+                              start: float, end: float, max_frames: int, rotate: int = 0):
+    """Slice every video file in video_dir (e.g. one file per camera in a
+    synchronized multi-camera rig) into a single shared out_dir, so all of
+    them become multi-view input together. Each video's frames are prefixed
+    with its filename stem (e.g. Cam1_frame_00001.jpg, Cam2_frame_00001.jpg)
+    to avoid collisions. fps/start/end/rotate apply identically to every video;
+    max_frames subsamples the combined set from all videos together (not
+    per-video), same semantics as extract_video_frames.
+
+    Always re-extracts into a clean out_dir, for the same reason
+    extract_video_frames does."""
+    if not os.path.isdir(video_dir):
+        sys.exit(f"--input_video does not exist: {video_dir}")
+    if rotate not in VIDEO_ROTATE_FILTERS:
+        sys.exit(f"--video_rotate must be one of {sorted(VIDEO_ROTATE_FILTERS)}, got {rotate}")
+    video_files = sorted(
+        f for f in os.listdir(video_dir) if f.lower().endswith(VIDEO_EXTENSIONS)
+    )
+    if not video_files:
+        sys.exit(f"No video files found in {video_dir}")
+
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir)
+
+    for name in video_files:
+        stem = os.path.splitext(name)[0]
+        _ffmpeg_extract_frames(
+            os.path.join(video_dir, name), out_dir, fps, start, end, rotate, prefix=f"{stem}_",
+        )
+    print(f"[video] extracted {len(os.listdir(out_dir))} frames from {len(video_files)} "
+          f"videos ({', '.join(video_files)}) at {fps} fps")
+    _subsample_frames(out_dir, max_frames)
+
+    return out_dir
+
+
+def parse_color(value: str):
+    """Parses an 'R,G,B' string (each 0-255) into an OpenCV-order (BGR) tuple."""
+    parts = value.split(",")
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(f"Color must be in 'R,G,B' format (e.g. 255,255,255): {value!r}")
+    try:
+        r, g, b = (int(p) for p in parts)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"Color must be in 'R,G,B' format (e.g. 255,255,255): {value!r}")
+    if not all(0 <= v <= 255 for v in (r, g, b)):
+        raise argparse.ArgumentTypeError(f"Each value must be in 0-255: {value!r}")
+    return (b, g, r)
 
 
 def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matcher: str):
@@ -245,9 +311,16 @@ def main():
                               f"{DEFAULT_INPUT_DIR}/some_scene. Ignored if --input_video or "
                               "--skip_colmap is set.")
     parser.add_argument("--input_video", type=str, default=None,
-                         help="Path to a video file to use instead of --input_dir; frames are "
-                              "extracted with ffmpeg (see --video_fps/--video_start/--video_end/"
-                              "--video_max_frames) into <output_dir>/video_frames and used as the input photos.")
+                         help="Path to a single video file, OR a directory of video files (e.g. one "
+                              "per camera in a synchronized multi-camera rig), to use instead of "
+                              "--input_dir. Frames are extracted with ffmpeg (see --video_fps/"
+                              "--video_start/--video_end/--video_max_frames) into "
+                              "<output_dir>/video_frames and used as the input photos. For a "
+                              "directory, every video inside is sliced into the same shared "
+                              "video_frames dir (filenames prefixed by each video's name to avoid "
+                              "collisions), and --colmap_matcher defaults to 'exhaustive' instead "
+                              "of 'sequential' since frames from different cameras aren't a single "
+                              "continuous, naturally-ordered sequence.")
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
                          help="Directory to write everything the pipeline produces (COLMAP data, "
                               f"trained/stylized Gaussians, renders). Defaults to {DEFAULT_OUTPUT_DIR}; "
@@ -283,19 +356,25 @@ def main():
     parser.add_argument("--skip_training", action="store_true",
                          help="Reuse an already-trained point cloud from output/point_cloud")
 
-    parser.add_argument("--source_model_type", type=str, required=True,
-                         help="cycle-diffusion DDPM domain matching the *input* photos: one of the "
-                              "built-in types (celeba256, ffhq256, bedroom256, church_outdoor256, "
-                              "afhqcat256, afhqdog256, afhqwild256, imagenet512), or any other name "
-                              "to use a custom checkpoint (requires --source_model_path and a matching "
-                              "cycle-diffusion-for-anime-face/ckpts/ddpm/configs/<name>.yml, e.g. ffhq_custom)")
-    parser.add_argument("--source_model_path", type=str, default=None,
-                         help="Required for afhq* domains and any custom (non-built-in) model type; "
-                              "omit for built-in types with a default checkpoint path")
-    parser.add_argument("--target_model_type", type=str, required=True,
-                         help="cycle-diffusion DDPM domain to translate the renders into (the style); "
-                              "same rules as --source_model_type (e.g. anime for a custom anime-face checkpoint)")
-    parser.add_argument("--target_model_path", type=str, default=None)
+    parser.add_argument("--remove_background", action=argparse.BooleanOptionalAction, default=False,
+                         help="Preprocess input photos (after COLMAP-dir assembly, before COLMAP runs) by "
+                              "repainting each photo's background a solid color, using the same "
+                              "BiSeNet-based method as anime-face-alignment's util/ffhq_face_alignment.py "
+                              "(see style_pipeline/background_removal.py). Only background pixels are "
+                              "repainted in place -- no crop/resize -- so camera geometry stays intact for "
+                              "COLMAP/3DGS. Off by default.")
+    parser.add_argument("--bg_color", type=parse_color, default=(255, 255, 255),
+                         help="Fill color for --remove_background, as 'R,G,B' (0-255 each, default "
+                              "255,255,255 = white).")
+
+    parser.add_argument("--source_model_path", type=str, required=True,
+                         help="Path (relative to cycle-diffusion-for-anime-face/) to the 'oneres-cosine' "
+                              "DDPM checkpoint matching the *input* photos' domain, e.g. "
+                              "ckpts/ddpm/ffhq-oneres-cosine-020000.pt")
+    parser.add_argument("--target_model_path", type=str, required=True,
+                         help="Path (relative to cycle-diffusion-for-anime-face/) to the 'oneres-cosine' "
+                              "DDPM checkpoint for the style to translate the renders into, e.g. "
+                              "ckpts/ddpm/anime-oneres-cosine-020000.pt")
     parser.add_argument("--sample_type", type=str, default="ddim", choices=["ddim", "ddpm"])
     parser.add_argument("--custom_steps", type=int, default=1000)
     parser.add_argument("--eta", type=float, default=0.1)
@@ -315,8 +394,22 @@ def main():
     safe_state(False)
 
     if not args.skip_colmap:
-        matcher = args.colmap_matcher or ("sequential" if args.input_video else "exhaustive")
-        if args.input_video:
+        input_video_is_dir = bool(args.input_video) and os.path.isdir(args.input_video)
+        # Sequential matching assumes one continuous, naturally-ordered shot, which
+        # only holds for a single video; a directory of per-camera videos has frames
+        # from different, unrelated viewpoints concatenated together (see
+        # extract_video_frames_dir), so default to exhaustive matching for that case
+        # just like a plain --input_dir of stills.
+        matcher = args.colmap_matcher or (
+            "sequential" if (args.input_video and not input_video_is_dir) else "exhaustive"
+        )
+        if input_video_is_dir:
+            input_dir = extract_video_frames_dir(
+                args.input_video, os.path.join(output_dir, "video_frames"),
+                args.video_fps, args.video_start, args.video_end, args.video_max_frames,
+                rotate=args.video_rotate,
+            )
+        elif args.input_video:
             input_dir = extract_video_frames(
                 args.input_video, os.path.join(output_dir, "video_frames"),
                 args.video_fps, args.video_start, args.video_end, args.video_max_frames,
@@ -324,6 +417,13 @@ def main():
             )
         else:
             input_dir = args.input_dir
+
+        if args.remove_background:
+            print("=== Preprocessing: removing backgrounds from input photos ===")
+            input_dir = remove_background_dir(
+                input_dir, os.path.join(output_dir, "bg_removed"), bg_color=args.bg_color,
+            )
+
         prepare_colmap_dataset(input_dir, colmap_dir, no_gpu=not args.colmap_gpu, matcher=matcher)
 
     dataset = lp.extract(args)
@@ -344,8 +444,7 @@ def main():
 
     print("=== Step 3: style transfer via cycle-diffusion (DDPM/DDIM) ===")
     style_transfer = DDPMStyleTransfer(
-        source_model_type=args.source_model_type, source_model_path=args.source_model_path,
-        target_model_type=args.target_model_type, target_model_path=args.target_model_path,
+        source_model_path=args.source_model_path, target_model_path=args.target_model_path,
         sample_type=args.sample_type, custom_steps=args.custom_steps, eta=args.eta,
         refine_steps=args.refine_steps, es_steps=args.es_steps,
     )
