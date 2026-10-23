@@ -2,6 +2,8 @@
 # All paths are relative to cycle-diffusion-for-anime-face/.
 # Every key is required; style_pipeline/ddpm_bridge.py has no fallback defaults.
 
+method: cycle_diffusion   # cycle_diffusion | styleid (see styleid_mp128.yml)
+
 # num_res_blocks=2 / linear-schedule architecture (the bgremoved checkpoints'
 # family per the submodule's pipeline/step_e12_translate_matched_arch.py).
 model_config: ckpts/ddpm/configs/improved_diffusion_custom_face256_linear.yml

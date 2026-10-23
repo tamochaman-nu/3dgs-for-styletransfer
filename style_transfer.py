@@ -248,34 +248,39 @@ def render_views(scene, gaussians, pipe, background, out_dir):
 def stylize_views(rendered, style_transfer, background, conf_threshold, out_dir):
     """Step 3: translate the face crop of each render through cycle-diffusion's
     DDPM/DDIM model. Views with no detected face are left out, so the baking
-    step only fits against views that were actually stylized."""
+    step only fits against views that were actually stylized.
+    Returns (stylized {name: (3, H, W)}, boxes {name: (x0, y0, x1, y1)})."""
     crops_dir = os.path.join(out_dir, "crops")
     os.makedirs(crops_dir, exist_ok=True)
     stylized = {}
+    boxes = {}
     skipped = []
     for name, image in tqdm(rendered.items(), desc="Style-transferring views"):
         result = style_transfer.stylize(image, background, conf_threshold=conf_threshold)
         if result is None:
             skipped.append(name)
             continue
-        styled, crop_before, crop_after = result
+        styled, crop_before, crop_after, box = result
         torchvision.utils.save_image(styled, os.path.join(out_dir, f"{name}.png"))
         torchvision.utils.save_image(torch.cat([crop_before, crop_after], dim=2), os.path.join(crops_dir, f"{name}.png"))
         stylized[name] = styled.detach().cpu()
+        boxes[name] = box
     if skipped:
         print(f"[stylize] no face detected in {len(skipped)}/{len(rendered)} views, excluded from baking: {skipped}")
     if not stylized:
         raise SystemExit("No face was detected in any rendered view; nothing to stylize.")
-    return stylized
+    return stylized, boxes
 
 
-def bake_and_optimize_color(scene, gaussians, pipe, background, stylized,
+def bake_and_optimize_color(scene, gaussians, pipe, background, stylized, boxes,
                              iterations, lr, lambda_dssim, out_dir):
     """Steps 4-5: freeze geometry/opacity, reset to diffuse-only color, and optimize
     the SH degree-0 (diffuse) term against the stylized renders. Higher-order SH
     bands are zeroed and frozen since each stylized view comes from an independent,
     multi-view-inconsistent diffusion sample -- fitting a single diffuse color per
-    Gaussian is what keeps the result multi-view consistent."""
+    Gaussian is what keeps the result multi-view consistent.
+    The loss only covers each view's stylized face crop (boxes): outside it the
+    target is the unstylized render, which would pull colors back to the photo."""
     gaussians._xyz.requires_grad_(False)
     gaussians._scaling.requires_grad_(False)
     gaussians._rotation.requires_grad_(False)
@@ -296,9 +301,10 @@ def bake_and_optimize_color(scene, gaussians, pipe, background, stylized,
     for it in progress:
         name = names[randint(0, len(names) - 1)]
         cam = cams_by_name[name]
-        target = stylized[name].cuda()
+        x0, y0, x1, y1 = boxes[name]
+        target = stylized[name][:, y0:y1, x0:x1].contiguous().cuda()
 
-        image = render(cam, gaussians, pipe, background)["render"]
+        image = render(cam, gaussians, pipe, background)["render"][:, y0:y1, x0:x1].contiguous()
 
         Ll1 = l1_loss(image, target)
         if FUSED_SSIM_AVAILABLE:
@@ -509,7 +515,7 @@ def main():
 
     print("=== Step 3: style transfer via cycle-diffusion (DDPM/DDIM) ===")
     style_transfer = DDPMStyleTransfer(args.style_config)
-    stylized = stylize_views(
+    stylized, boxes = stylize_views(
         rendered, style_transfer, background, args.face_conf_threshold, os.path.join(output_dir, "stylized"),
     )
     del style_transfer
@@ -517,7 +523,7 @@ def main():
 
     print("=== Steps 4-5: baking + optimizing the stylized color onto the Gaussians ===")
     bake_and_optimize_color(
-        scene, gaussians, pipe, background, stylized,
+        scene, gaussians, pipe, background, stylized, boxes,
         args.style_iterations, args.style_lr, opt.lambda_dssim, output_dir,
     )
 

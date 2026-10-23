@@ -74,6 +74,7 @@ Every Step-3 setting is read from a config yml, default
 need no rebuild). There are no CLI flags or code defaults for any of these:
 
 ```yaml
+method: cycle_diffusion
 model_config: ckpts/ddpm/configs/improved_diffusion_custom_face256_cosine.yml
 source_model_path: ckpts/ddpm/ffhq-oneres-cosine-020000.pt
 target_model_path: ckpts/ddpm/anime-oneres-cosine-020000.pt
@@ -100,11 +101,39 @@ face_crop:
   `step_e12_translate_matched_arch.py`'s defaults (notably `refine_steps: 0`).
   For stronger stylization, raise `eta` (up to 1.0) and/or lower `es_steps`, at
   the cost of identity/structure preservation.
+- `method` — `cycle_diffusion` (this section) or `styleid` (see "StyleID" below).
 - `face_crop.scale` — see "Face crop" below.
 
 To use another checkpoint pair, copy the file and pass
 `--style_config /workspace/configs/style_transfer/<name>.yml`. A checkpoint that
 doesn't match `model_config` fails loudly at `load_state_dict`.
+
+### StyleID (`method: styleid`)
+
+`configs/style_transfer/styleid_mp128.yml` uses the submodule's StyleID
+self-attention K/V injection (`pipeline/styleid.py`, same flow as its
+`translate_styleid.py`): each face crop is DDIM-inverted, and while the anime
+model regenerates it, the crop supplies the decoder self-attention queries
+(layout) and one anime reference image (`style_image`) supplies the keys/values
+(appearance). One style image is shared by every view, so its K/V are recorded
+once at startup.
+
+- `model_type` — name of a submodule `ckpts/ddpm/configs/<model_type>.yml`; must be
+  an MP U-Net (`arch: "mp"`) config, e.g. `guided_diffusion_mp128_face256_cosine`.
+- `target_model_path` — the anime MP checkpoint
+  (`ckpts/ddpm/anime-mp-100000-128-ema09995.pt`). `source_model_path` (FFHQ MP
+  checkpoint) is only loaded when `styleid.content_inversion: source`.
+- `style_image` — anime reference, relative to this repo's root or absolute (e.g.
+  `input/styles/27243460.jpg`, mounted at `/workspace/input/styles/`).
+- `styleid` — `num_steps`, `t_0`, `gamma`, `tau`, `layers`, `adain`,
+  `content_inversion`; defaults follow `translate_styleid.py` (see its `--help`
+  for what each does).
+
+```bash
+docker compose run --rm style-transfer \
+  --output_dir /workspace/output/output3 --skip_colmap --skip_training --face_only \
+  --style_config /workspace/configs/style_transfer/styleid_mp128.yml
+```
 
 ### Face crop
 
@@ -114,7 +143,8 @@ render, the face is detected (OpenCV DNN res10, `--face_conf_threshold`), a
 square of side `face_crop.scale` × the face box's longer side is cut around it
 (padded with `--bg_color` where it extends past the render), translated at the
 model's native resolution, and pasted back. Views with no detected face are
-excluded from baking. Each view's crop before/after translation is saved to
+excluded from baking, and the baking loss only covers each view's crop region
+(outside it the target would be the unstylized render). Each view's crop before/after translation is saved to
 `<output_dir>/stylized/crops/`.
 
 ## Running

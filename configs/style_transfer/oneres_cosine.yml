@@ -2,6 +2,8 @@
 # All paths are relative to cycle-diffusion-for-anime-face/.
 # Every key is required; style_pipeline/ddpm_bridge.py has no fallback defaults.
 
+method: cycle_diffusion   # cycle_diffusion | styleid (see styleid_mp128.yml)
+
 # Architecture (model:), resolution (data:) and noise schedule (diffusion:) of
 # both checkpoints. Use ..._linear.yml for num_res_blocks=2 / linear checkpoints.
 model_config: ckpts/ddpm/configs/improved_diffusion_custom_face256_cosine.yml

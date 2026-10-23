@@ -1,0 +1,34 @@
+# Style-transfer (Step 3) settings for style_transfer.py --style_config.
+# Every key is required; style_pipeline/ddpm_bridge.py has no fallback defaults.
+
+# StyleID self-attention K/V injection (submodule pipeline/styleid.py): the render
+# supplies the attention queries (layout), style_image supplies the keys/values
+# (appearance), both read from the anime model's decoder self-attention.
+method: styleid
+
+# Name of the submodule's ckpts/ddpm/configs/<model_type>.yml. Must be an MP U-Net
+# (arch: "mp") config.
+model_type: guided_diffusion_mp128_face256_cosine
+
+# Paths relative to cycle-diffusion-for-anime-face/.
+target_model_path: ckpts/ddpm/anime-mp-100000-128-ema09995.pt
+source_model_path: ckpts/ddpm/ffhq-mp-100000-128-ema09995.pt   # only loaded for content_inversion: source
+
+# Anime reference image (relative to this repo's root, or absolute). One style is
+# shared by every view.
+style_image: input/styles/12119910.jpg
+
+# Defaults of the submodule's translate_styleid.py.
+styleid:
+  content_inversion: target   # target (paper setup) | source (invert with the FFHQ model)
+  num_steps: 50               # DDIM steps for inversion and generation
+  t_0: 950                    # inversion depth (999 collapses to noise with the cosine schedule)
+  gamma: 0.85                 # query preservation: q = gamma * Q_content + (1 - gamma) * q
+  tau: 1.5                    # attention temperature
+  layers: [dec.16x16, dec.32x32]
+  adain: false                # AdaIN the initial latent to the style's
+
+face_crop:
+  # Side of the square crop fed to the models, as a multiple of the detected
+  # face bounding box's longer side.
+  scale: 2.0
