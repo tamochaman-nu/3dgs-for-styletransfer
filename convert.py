@@ -38,6 +38,13 @@ parser.add_argument("--matcher", default="exhaustive", choices=["exhaustive", "s
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
 parser.add_argument("--magick_executable", default="", type=str)
+parser.add_argument("--single_camera", type=int, default=1, choices=[0, 1],
+                     help="Passed to COLMAP's --ImageReader.single_camera: 1 assumes every image in "
+                          "--source_path/input shares one camera model/intrinsics (valid for frames "
+                          "from a single physical camera). Use 0 when the input mixes frames from "
+                          "multiple distinct cameras (e.g. a multi-camera rig) -- with 1, COLMAP's "
+                          "feature_extractor silently drops any image whose dimensions don't match "
+                          "the first-registered camera, which otherwise fails without an error.")
 args = parser.parse_args()
 colmap_command = '"{}"'.format(args.colmap_executable) if len(args.colmap_executable) > 0 else "colmap"
 magick_command = '"{}"'.format(args.magick_executable) if len(args.magick_executable) > 0 else "magick"
@@ -50,7 +57,7 @@ if not args.skip_matching:
     feat_extracton_cmd = colmap_command + " feature_extractor "\
         "--database_path " + args.source_path + "/distorted/database.db \
         --image_path " + args.source_path + "/input \
-        --ImageReader.single_camera 1 \
+        --ImageReader.single_camera " + str(args.single_camera) + " \
         --ImageReader.camera_model " + args.camera + " \
         --SiftExtraction.use_gpu " + str(use_gpu)
     exit_code = run_cmd(feat_extracton_cmd)

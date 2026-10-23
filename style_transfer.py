@@ -32,6 +32,7 @@ from gaussian_renderer import render
 from scene import GaussianModel, Scene
 from style_pipeline.background_removal import remove_background_dir
 from style_pipeline.ddpm_bridge import DDPMStyleTransfer
+from style_pipeline.face_region import compute_face_region, prune_gaussians_to_region
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
 
@@ -44,6 +45,8 @@ except ImportError:
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_INPUT_DIR = "/workspace/input"
 DEFAULT_OUTPUT_DIR = "/workspace/output"
+DEFAULT_STYLE_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "style_transfer",
+                                    "oneres_cosine.yml")
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
@@ -172,9 +175,19 @@ def parse_color(value: str):
     return (b, g, r)
 
 
-def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matcher: str):
+def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matcher: str,
+                            single_camera: bool = True):
     """Turn the raw multi-view photos in input_dir into a COLMAP dataset (images/ +
     sparse/0) under colmap_dir, in the layout Scene() expects.
+
+    single_camera=False tells COLMAP's feature_extractor to give each image its own
+    camera model/intrinsics instead of assuming one shared camera for the whole
+    input_dir. Needed whenever input_dir mixes frames from multiple distinct physical
+    cameras (see extract_video_frames_dir): with single_camera=True, COLMAP silently
+    drops every image whose dimensions don't match the first-registered camera,
+    rather than erroring -- e.g. a directory of Cam1.../Cam5... frames where even two
+    cameras differ by a few pixels (encoder macroblock-padding) ends up registering
+    only the subset that happens to match the first image's size, with no warning.
 
     Always rebuilds colmap_dir from scratch: this is only called when the caller
     wants a fresh dataset (see --skip_colmap in main()), so a stale sparse/ model
@@ -194,7 +207,10 @@ def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matche
     for name in raw_images:
         os.symlink(os.path.join(input_dir, name), os.path.join(colmap_input_dir, name))
 
-    cmd = [sys.executable, "convert.py", "-s", colmap_dir, "--matcher", matcher]
+    cmd = [
+        sys.executable, "convert.py", "-s", colmap_dir, "--matcher", matcher,
+        "--single_camera", "1" if single_camera else "0",
+    ]
     if no_gpu:
         cmd.append("--no_gpu")
     print("[colmap] running:", " ".join(cmd))
@@ -229,14 +245,27 @@ def render_views(scene, gaussians, pipe, background, out_dir):
     return rendered
 
 
-def stylize_views(rendered, style_transfer, out_dir):
-    """Step 3: translate each render through cycle-diffusion's DDPM/DDIM model."""
-    os.makedirs(out_dir, exist_ok=True)
+def stylize_views(rendered, style_transfer, background, conf_threshold, out_dir):
+    """Step 3: translate the face crop of each render through cycle-diffusion's
+    DDPM/DDIM model. Views with no detected face are left out, so the baking
+    step only fits against views that were actually stylized."""
+    crops_dir = os.path.join(out_dir, "crops")
+    os.makedirs(crops_dir, exist_ok=True)
     stylized = {}
+    skipped = []
     for name, image in tqdm(rendered.items(), desc="Style-transferring views"):
-        styled = style_transfer.stylize(image.cuda())
+        result = style_transfer.stylize(image, background, conf_threshold=conf_threshold)
+        if result is None:
+            skipped.append(name)
+            continue
+        styled, crop_before, crop_after = result
         torchvision.utils.save_image(styled, os.path.join(out_dir, f"{name}.png"))
+        torchvision.utils.save_image(torch.cat([crop_before, crop_after], dim=2), os.path.join(crops_dir, f"{name}.png"))
         stylized[name] = styled.detach().cpu()
+    if skipped:
+        print(f"[stylize] no face detected in {len(skipped)}/{len(rendered)} views, excluded from baking: {skipped}")
+    if not stylized:
+        raise SystemExit("No face was detected in any rendered view; nothing to stylize.")
     return stylized
 
 
@@ -358,28 +387,48 @@ def main():
 
     parser.add_argument("--remove_background", action=argparse.BooleanOptionalAction, default=False,
                          help="Preprocess input photos (after COLMAP-dir assembly, before COLMAP runs) by "
-                              "repainting each photo's background a solid color, using the same "
-                              "BiSeNet-based method as anime-face-alignment's util/ffhq_face_alignment.py "
-                              "(see style_pipeline/background_removal.py). Only background pixels are "
-                              "repainted in place -- no crop/resize -- so camera geometry stays intact for "
-                              "COLMAP/3DGS. Off by default.")
+                              "repainting each photo's background a solid color, using rembg's general-purpose "
+                              "u2net_human_seg model (see style_pipeline/background_removal.py). Only "
+                              "background pixels are repainted in place -- no crop/resize -- so camera "
+                              "geometry stays intact for COLMAP/3DGS. Off by default.")
     parser.add_argument("--bg_color", type=parse_color, default=(255, 255, 255),
-                         help="Fill color for --remove_background, as 'R,G,B' (0-255 each, default "
-                              "255,255,255 = white).")
+                         help="Background color as 'R,G,B' (0-255 each, default 255,255,255 = white): "
+                              "fill color for --remove_background, the background of the renders that are "
+                              "style-transferred and baked against, and the padding of face crops that "
+                              "extend past the render's edge.")
 
-    parser.add_argument("--source_model_path", type=str, required=True,
-                         help="Path (relative to cycle-diffusion-for-anime-face/) to the 'oneres-cosine' "
-                              "DDPM checkpoint matching the *input* photos' domain, e.g. "
-                              "ckpts/ddpm/ffhq-oneres-cosine-020000.pt")
-    parser.add_argument("--target_model_path", type=str, required=True,
-                         help="Path (relative to cycle-diffusion-for-anime-face/) to the 'oneres-cosine' "
-                              "DDPM checkpoint for the style to translate the renders into, e.g. "
-                              "ckpts/ddpm/anime-oneres-cosine-020000.pt")
-    parser.add_argument("--sample_type", type=str, default="ddim", choices=["ddim", "ddpm"])
-    parser.add_argument("--custom_steps", type=int, default=1000)
-    parser.add_argument("--eta", type=float, default=0.1)
-    parser.add_argument("--refine_steps", type=int, default=100)
-    parser.add_argument("--es_steps", type=int, default=850)
+    parser.add_argument("--face_only", action=argparse.BooleanOptionalAction, default=False,
+                         help="After Step 1 (reconstruction), prune the trained Gaussians down to a 3D "
+                              "region around the face (see style_pipeline/face_region.py), instead of "
+                              "keeping the whole reconstructed person/scene. Does not crop input photos -- "
+                              "training still uses the full images, so COLMAP registration isn't weakened -- "
+                              "it only removes Gaussians outside the detected face region afterwards. Off by "
+                              "default.")
+    parser.add_argument("--face_conf_threshold", type=float, default=0.5,
+                         help="Minimum confidence for the face detector (OpenCV DNN res10 SSD) to accept a "
+                              "detection: in training images for --face_only, and in renders for the face "
+                              "crop that is style-transferred.")
+    parser.add_argument("--face_hit_ratio_threshold", type=float, default=0.5,
+                         help="--face_only: a COLMAP sparse point is kept (counts toward the face region) "
+                              "if at least this fraction of its observations, in images with a detected "
+                              "face, fall inside that image's face bounding box.")
+    parser.add_argument("--face_region_percentile", type=float, default=90.0,
+                         help="--face_only: percentile (0-100) of qualifying sparse points' distance from "
+                              "the region center used as the base radius, before --face_region_margin is "
+                              "applied. Not the max distance: qualifying points reliably include a few "
+                              "extreme outliers (mistriangulated from spurious wide-baseline matches), and "
+                              "sizing the sphere off the single farthest point lets one bad point balloon "
+                              "the region out to engulf the whole scene.")
+    parser.add_argument("--face_region_margin", type=float, default=0.6,
+                         help="--face_only: fractional padding added to the face region's radius (e.g. 0.6 "
+                              "= 60%% larger than the --face_region_percentile sphere enclosing the "
+                              "qualifying sparse points), so the kept Gaussians cover the whole head, not "
+                              "just matched feature points.")
+
+    parser.add_argument("--style_config", type=str, default=DEFAULT_STYLE_CONFIG,
+                         help="Style-transfer config yml: checkpoints, model architecture/schedule "
+                              "(via the submodule's ckpts/ddpm/configs/*.yml), sampling steps/eta and "
+                              f"face crop scale. Defaults to {DEFAULT_STYLE_CONFIG}.")
 
     parser.add_argument("--style_iterations", type=int, default=3000,
                          help="Number of appearance-optimization steps for baking the style")
@@ -424,14 +473,17 @@ def main():
                 input_dir, os.path.join(output_dir, "bg_removed"), bg_color=args.bg_color,
             )
 
-        prepare_colmap_dataset(input_dir, colmap_dir, no_gpu=not args.colmap_gpu, matcher=matcher)
+        prepare_colmap_dataset(
+            input_dir, colmap_dir, no_gpu=not args.colmap_gpu, matcher=matcher,
+            single_camera=not input_video_is_dir,
+        )
 
     dataset = lp.extract(args)
     opt = op.extract(args)
     pipe = pp.extract(args)
 
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    b, g, r = args.bg_color
+    background = torch.tensor([r / 255.0, g / 255.0, b / 255.0], dtype=torch.float32, device="cuda")
 
     print("=== Step 1: reconstructing Gaussians from the input views ===")
     if args.skip_training:
@@ -439,16 +491,27 @@ def main():
     else:
         scene, gaussians = reconstruct_gaussians(dataset, opt, pipe)
 
+    if args.face_only:
+        print("=== Restricting reconstruction to the face region ===")
+        center, radius = compute_face_region(
+            os.path.join(colmap_dir, "sparse", "0"), os.path.join(colmap_dir, "images"),
+            conf_threshold=args.face_conf_threshold,
+            hit_ratio_threshold=args.face_hit_ratio_threshold,
+            margin_ratio=args.face_region_margin,
+            distance_percentile=args.face_region_percentile,
+        )
+        num_pruned, num_remaining = prune_gaussians_to_region(gaussians, center, radius)
+        print(f"[face_only] kept {num_remaining} Gaussians, pruned {num_pruned} "
+              f"(region center={center}, radius={radius:.4f})")
+
     print("=== Step 2: rendering the trained Gaussians ===")
     rendered = render_views(scene, gaussians, pipe, background, os.path.join(output_dir, "renders"))
 
     print("=== Step 3: style transfer via cycle-diffusion (DDPM/DDIM) ===")
-    style_transfer = DDPMStyleTransfer(
-        source_model_path=args.source_model_path, target_model_path=args.target_model_path,
-        sample_type=args.sample_type, custom_steps=args.custom_steps, eta=args.eta,
-        refine_steps=args.refine_steps, es_steps=args.es_steps,
+    style_transfer = DDPMStyleTransfer(args.style_config)
+    stylized = stylize_views(
+        rendered, style_transfer, background, args.face_conf_threshold, os.path.join(output_dir, "stylized"),
     )
-    stylized = stylize_views(rendered, style_transfer, os.path.join(output_dir, "stylized"))
     del style_transfer
     torch.cuda.empty_cache()
 

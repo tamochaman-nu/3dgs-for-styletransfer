@@ -7,6 +7,7 @@ services:
     volumes:
       - ./input:/workspace/input
       - ./output:/workspace/output
+      - ./configs:/workspace/configs
       - ./cycle-diffusion-for-anime-face/ckpts:/workspace/cycle-diffusion-for-anime-face/ckpts
     environment:
       - NVIDIA_VISIBLE_DEVICES=all

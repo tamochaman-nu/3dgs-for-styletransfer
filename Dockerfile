@@ -36,8 +36,12 @@ RUN python3 -m pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cu121
 
 # numpy<2: the torch wheel above is built against the NumPy 1.x ABI.
+# onnxruntime: rembg's ONNX inference backend. Not pulled in automatically by
+# `pip install rembg` on all versions (its onnxruntime dependency is optional,
+# so users can choose onnxruntime-gpu instead), so install it explicitly.
 RUN python3 -m pip install --no-cache-dir \
-        "numpy<2" pillow pyyaml tqdm plyfile joblib opencv-python-headless
+        "numpy<2" pillow pyyaml tqdm plyfile joblib opencv-python-headless \
+        "rembg>=2.0.65" onnxruntime
 
 WORKDIR /workspace
 COPY . /workspace

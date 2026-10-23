@@ -52,58 +52,70 @@ view-dependent color (which would show up as floaters/artifacts).
 
 The DDPM/DDIM unpaired-translation path needs **two separately-trained** diffusion
 checkpoints: one for the domain that matches your input photos (source) and one for
-the style you want to translate into (target). This pipeline is wired specifically
-to the **"oneres-cosine"** self-trained openai/improved-diffusion checkpoint pair:
+the style you want to translate into (target), sharing one architecture/noise
+schedule. Default values match the **"oneres-cosine"** self-trained
+openai/improved-diffusion checkpoint pair:
 - `cycle-diffusion-for-anime-face/ckpts/ddpm/ffhq-oneres-cosine-020000.pt` (source: real faces)
 - `cycle-diffusion-for-anime-face/ckpts/ddpm/anime-oneres-cosine-020000.pt` (target/style: anime faces)
 
-Both checkpoints share one architecture (reverse-engineered from their tensor
-shapes — see the submodule's
-`pipeline/step_e12_translate_matched_arch.py` module docstring): a 256-channel UNet
-with `num_res_blocks=1`, `attention_resolutions="32,16,8"`, and a **cosine** noise
-schedule (not the "linear" default used by cycle-diffusion's flagship
-`ffhq512_*`/`anime_aligned_curated_*` checkpoints, which otherwise share the same
-architecture but with `num_res_blocks=2`).
+Both share one architecture (reverse-engineered from their tensor shapes — see the
+submodule's `pipeline/step_e12_translate_matched_arch.py` module docstring): a
+256-channel UNet with `attention_resolutions="32,16,8"`, `num_res_blocks=1`, and a
+**cosine** noise schedule.
 
-This architecture has no `i_DDPM()` preset in
-`model/lib/ddpm_ddim/models/improved_ddpm/script_util.py`, so
-`style_pipeline/ddpm_bridge.py` loads both checkpoints through the submodule's
-`pipeline/generic_ddpm_wrapper.py`'s `GenericDDPMWrapper` instead of
-`model/gan_wrapper/ddpm_ddim_wrapper.py`'s `DDPMDDIMWrapper` — `GenericDDPMWrapper`
-builds the UNet directly from explicit architecture kwargs
-(`model/lib/ddpm_ddim/models/improved_ddpm/script_util.py`'s `i_DDPM()` presets and
-any config-yaml dataset name are irrelevant to this pipeline). The architecture
-kwargs and the cosine/linear choice are hardcoded in
-`style_pipeline/ddpm_bridge.py`'s `_ONERES_COSINE_ARCH_KWARGS`, not read from a yaml
-or CLI flag — there is nothing to configure beyond the two checkpoint paths.
+Both checkpoints are loaded through the submodule's
+`pipeline/generic_ddpm_wrapper.py` (`GenericDDPMWrapper`), the same wrapper its
+reference script `pipeline/step_e12_translate_matched_arch.py` uses.
 
-Drop both checkpoints under `cycle-diffusion-for-anime-face/ckpts/ddpm/` and run:
+### Style config (`--style_config`)
 
-```bash
-docker compose run --rm style-transfer \
-  --source_model_path ckpts/ddpm/ffhq-oneres-cosine-020000.pt \
-  --target_model_path ckpts/ddpm/anime-oneres-cosine-020000.pt \
-  --iterations 30000 --style_iterations 3000
+Every Step-3 setting is read from a config yml, default
+`configs/style_transfer/oneres_cosine.yml` (mounted into the container, so edits
+need no rebuild). There are no CLI flags or code defaults for any of these:
+
+```yaml
+model_config: ckpts/ddpm/configs/improved_diffusion_custom_face256_cosine.yml
+source_model_path: ckpts/ddpm/ffhq-oneres-cosine-020000.pt
+target_model_path: ckpts/ddpm/anime-oneres-cosine-020000.pt
+sampling:
+  sample_type: ddim
+  custom_steps: 1000
+  es_steps: 850
+  eta: 0.1
+  refine_steps: 0
+  t_0: null
+face_crop:
+  scale: 2.0
 ```
 
-(`--source_model_path`/`--target_model_path` are resolved relative to
-`cycle-diffusion-for-anime-face/`, matching where cycle-diffusion's own built-in
-checkpoints live.)
+- `model_config` — one of the submodule's `ckpts/ddpm/configs/*.yml`. Its
+  `model:` (UNet architecture), `data:` (resolution/channels) and `diffusion:`
+  (noise schedule) sections are used as-is. Use
+  `improved_diffusion_custom_face256_linear.yml` for `num_res_blocks=2` /
+  linear-schedule checkpoints.
+- `source_model_path` / `target_model_path` — checkpoints for the input-photo
+  domain and the style domain. All paths are relative to
+  `cycle-diffusion-for-anime-face/`.
+- `sampling` — CycleDiffusion encode/decode settings. The values above match
+  `step_e12_translate_matched_arch.py`'s defaults (notably `refine_steps: 0`).
+  For stronger stylization, raise `eta` (up to 1.0) and/or lower `es_steps`, at
+  the cost of identity/structure preservation.
+- `face_crop.scale` — see "Face crop" below.
 
-If you swap in a *different* self-trained checkpoint pair, confirm it actually
-shares this architecture (inspect its `state_dict` tensor shapes, e.g.
-`time_embed.0.weight`'s shape should be `(1024, 256)`) before relying on this
-pipeline as-is — a mismatched checkpoint will fail to load (`load_state_dict`
-shape error) or, if it happens to load anyway (`strict_load=False`), produce
-garbage output.
+To use another checkpoint pair, copy the file and pass
+`--style_config /workspace/configs/style_transfer/<name>.yml`. A checkpoint that
+doesn't match `model_config` fails loudly at `load_state_dict`.
 
-**Stylization strength**: the default `--sample_type ddim --custom_steps 1000 --eta
-0.1 --refine_steps 100 --es_steps 850` biases toward preserving the source photo's
-structure/identity over strong stylization (both `eta=0.1` and the shared
-encode/decode latent path favor identity preservation). If you want stronger
-stylization, try raising `--eta` (up to 1.0) and/or lowering `--es_steps`, at the
-cost of identity/structure preservation; there's a real tradeoff here, so re-check
-output quality on a single test photo before running the full multi-view pipeline.
+### Face crop
+
+The models are trained on square, face-centered images, so a whole render
+(non-square, face only a small part of it) is never fed in directly. For each
+render, the face is detected (OpenCV DNN res10, `--face_conf_threshold`), a
+square of side `face_crop.scale` × the face box's longer side is cut around it
+(padded with `--bg_color` where it extends past the render), translated at the
+model's native resolution, and pasted back. Views with no detected face are
+excluded from baking. Each view's crop before/after translation is saved to
+`<output_dir>/stylized/crops/`.
 
 ## Running
 
@@ -113,8 +125,6 @@ git submodule update --init --recursive   # populates the CUDA submodules + cycl
 docker compose build
 
 docker compose run --rm style-transfer \
-  --source_model_path ckpts/ddpm/ffhq-oneres-cosine-020000.pt \
-  --target_model_path ckpts/ddpm/anime-oneres-cosine-020000.pt \
   --iterations 30000 \
   --style_iterations 3000
 ```
@@ -128,9 +138,15 @@ Useful flags:
   Defaults to `/workspace/output`; pass a subdirectory of it (e.g.
   `/workspace/output/some_scene`) to keep multiple runs side by side without
   them clobbering each other.
-- `--input_video` — use a video instead of a folder of stills. Frames are
-  extracted with `ffmpeg` into `<output_dir>/video_frames` and used as the input
-  photos. Slicing options:
+- `--input_video` — use a video, OR a directory of videos (e.g. one file per
+  camera in a synchronized multi-camera rig), instead of a folder of stills.
+  Frames are extracted with `ffmpeg` into `<output_dir>/video_frames` and used
+  as the input photos. For a directory, every video inside is sliced into the
+  shared `video_frames` dir with filenames prefixed by each video's name (e.g.
+  `Cam1_frame_00001.jpg`), and COLMAP treats each source video as its own
+  camera (`--single_camera 0`, see below) rather than assuming they all share
+  one camera's intrinsics. Slicing options (apply identically to every video
+  in a directory):
   - `--video_fps` (default 2.0) — thin the video down to this many frames/sec.
     Raw video is usually 30-60fps, far denser than SfM needs; 1-3 fps is typical.
   - `--video_start` / `--video_end` — trim to a time range (seconds).
@@ -146,9 +162,37 @@ Useful flags:
     `--video_fps`/`--video_start`/`--video_end`/`--video_max_frames` always takes
     effect — it's never silently skipped because frames already exist there.
 - `--colmap_matcher` (`exhaustive` or `sequential`) — defaults to `sequential`
-  when `--input_video` is set (video frames overlap mainly with near
+  when `--input_video` is a single video file (frames overlap mainly with near
   neighbors in time, and sequential matching is much faster for this), and
-  `exhaustive` otherwise (unordered stills, where every pair might overlap).
+  `exhaustive` otherwise (unordered stills, or a directory of per-camera
+  videos, where frames from different cameras aren't a single continuous
+  sequence).
+- COLMAP's `--ImageReader.single_camera` is set to `0` (one camera
+  model/intrinsics per source video) automatically whenever `--input_video`
+  is a directory, and `1` (one shared camera for everything) otherwise. This
+  matters even if the cameras look identical: with `single_camera 1`,
+  COLMAP's `feature_extractor` silently drops every image whose pixel
+  dimensions don't exactly match the first-registered camera, rather than
+  erroring — e.g. one camera's encoder padding its frame width to a macroblock
+  boundary (1088px) while another's doesn't (1080px) is enough to make COLMAP
+  extract keypoints for only a subset of the cameras, with no warning, and
+  the final reconstruction ends up built from whichever single camera's
+  frames happened to register into the largest COLMAP sub-model.
+- `--remove_background` (off by default) — preprocess input photos, after
+  `video_frames`/`bg_removed` assembly but before COLMAP runs, by repainting
+  each photo's background a solid color (`--bg_color`, default white
+  `255,255,255`). Uses `rembg`'s general-purpose `u2net_human_seg` model
+  (`style_pipeline/background_removal.py`), the same `rembg` library
+  `~/anime-face-alignment`'s anime-mode background removal uses (different
+  model: `u2net_human_seg` here vs. `isnet-anime` there). An earlier version
+  of this used BiSeNet (CelebAMask-HQ), which is trained on tightly-cropped,
+  face-centered portraits and produced large misclassified regions
+  (background mistaken for clothing/hair/skin) on this pipeline's actual
+  photos, where the subject is a smaller part of a wider, more distant shot;
+  `u2net_human_seg` has no such framing assumption. Only background pixels
+  are repainted (alpha-composited, not a hard binary mask) — no crop/resize —
+  so camera geometry stays intact for COLMAP/3DGS. Output written to
+  `<output_dir>/bg_removed`.
 - `--skip_colmap` — reuse the existing `<output_dir>/colmap` dataset (and
   `video_frames`, if applicable) exactly as-is, with no re-extraction or
   re-matching. Without this flag, both are always wiped and rebuilt from the
@@ -157,16 +201,17 @@ Useful flags:
   (only re-runs rendering, style transfer, and color baking).
 - `--colmap_gpu` — use GPU SIFT in COLMAP (needs a CUDA-enabled colmap build; the
   image installs the apt package, which is CPU-only, so this is off by default).
-- `--sample_type`, `--custom_steps`, `--eta`, `--refine_steps`, `--es_steps` — passed
-  straight through to cycle-diffusion's DDPM/DDIM sampler.
+- `--bg_color` — also used as the background of the renders that are
+  style-transferred and baked against (so regions removed by `--face_only` render
+  as this color, not black), and as padding for face crops.
+- `--style_config` — see "Style config" above.
 - All standard 3DGS `train.py` flags (`--iterations`, `--resolution`, `--white_background`, …)
   are also accepted, since Step 1 reuses `train.py`'s training loop directly.
 
 ## Known limitations
 
-- DDPM/DDIM here runs at a fixed native resolution (typically 256×256). Renders are
-  downsampled for translation and the stylized result is upsampled back to the
-  render resolution without preserving aspect ratio (mild geometric distortion in the
-  style-transfer step only — it's used purely as a color-baking target).
+- DDPM/DDIM here runs at a fixed native resolution (typically 256×256), so the
+  stylized face crop is upsampled back to its size in the render and is softer than
+  the render itself. Outside the face crop, the render is left unstylized.
 - The apt `colmap` package has no GPU SIFT support, so `convert.py` runs
   `--no_gpu` by default; expect COLMAP to be the slowest step on large image sets.
