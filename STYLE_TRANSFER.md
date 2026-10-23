@@ -235,6 +235,19 @@ Useful flags:
   style-transferred and baked against (so regions removed by `--face_only` render
   as this color, not black), and as padding for face crops.
 - `--style_config` — see "Style config" above.
+- Baking (Steps 4-5): the diffuse color (SH degree 0) is always optimized;
+  higher SH bands are zeroed and positions stay frozen.
+  - `--bake_geometry` (default on) — also optimize scaling/rotation/opacity and
+    densify, so thin Gaussians can form for stroke lines. `--no-bake_geometry`
+    bakes color only.
+  - `--bake_geometry_lr_scale` (default 0.1) — multiplier on
+    `--scaling_lr`/`--rotation_lr`/`--opacity_lr` while baking.
+  - `--bake_densify_until` (default 1500, 0 = off) /
+    `--bake_densification_interval` (default 100) — densification window;
+    thresholds follow `--densify_grad_threshold`/`--percent_dense`.
+  - `--bake_lambda_edge` (default 0.5, 0 = off) — weight of an L1 loss on Sobel
+    edges of render vs. stylized target, so few-pixel stroke lines count.
+  - `--style_iterations`, `--style_lr`, `--lambda_dssim` as before.
 - All standard 3DGS `train.py` flags (`--iterations`, `--resolution`, `--white_background`, …)
   are also accepted, since Step 1 reuses `train.py`'s training loop directly.
 

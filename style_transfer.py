@@ -272,31 +272,67 @@ def stylize_views(rendered, style_transfer, background, conf_threshold, out_dir)
     return stylized, boxes
 
 
-def bake_and_optimize_color(scene, gaussians, pipe, background, stylized, boxes,
-                             iterations, lr, lambda_dssim, out_dir):
-    """Steps 4-5: freeze geometry/opacity, reset to diffuse-only color, and optimize
-    the SH degree-0 (diffuse) term against the stylized renders. Higher-order SH
-    bands are zeroed and frozen since each stylized view comes from an independent,
-    multi-view-inconsistent diffusion sample -- fitting a single diffuse color per
-    Gaussian is what keeps the result multi-view consistent.
+_SOBEL_X = torch.tensor([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]])
+
+
+def sobel_edges(image):
+    """(3, H, W) -> (3, H, W) per-channel Sobel gradient magnitude."""
+    kx = _SOBEL_X.to(image.device).view(1, 1, 3, 3).repeat(3, 1, 1, 1)
+    ky = kx.transpose(2, 3)
+    x = torch.nn.functional.pad(image.unsqueeze(0), (1, 1, 1, 1), mode="replicate")
+    gx = torch.nn.functional.conv2d(x, kx, groups=3)
+    gy = torch.nn.functional.conv2d(x, ky, groups=3)
+    return torch.sqrt(gx * gx + gy * gy + 1e-12).squeeze(0)
+
+
+def bake_and_optimize_color(scene, gaussians, pipe, background, stylized, boxes, opt, args, out_dir):
+    """Steps 4-5: reset to diffuse-only color and optimize the stylized look onto
+    the Gaussians. Higher-order SH bands are zeroed and frozen (lr 0) since each
+    stylized view comes from an independent, multi-view-inconsistent diffusion
+    sample -- fitting a single diffuse color per Gaussian keeps the result
+    multi-view consistent. Positions stay frozen.
+
+    With --bake_geometry, scaling/rotation/opacity are optimized too and the
+    Gaussians are densified (clone/split by view-space gradient, as in train.py),
+    so thin Gaussians can form for stroke lines that the photo reconstruction's
+    large, smooth Gaussians cannot represent. --bake_lambda_edge adds an L1 loss on
+    Sobel edges so those few-pixel lines weigh in against the large flat regions.
+
     The loss only covers each view's stylized face crop (boxes): outside it the
     target is the unstylized render, which would pull colors back to the photo."""
-    gaussians._xyz.requires_grad_(False)
-    gaussians._scaling.requires_grad_(False)
-    gaussians._rotation.requires_grad_(False)
-    gaussians._opacity.requires_grad_(False)
-
     with torch.no_grad():
         gaussians._features_rest.zero_()
-    gaussians._features_rest.requires_grad_(False)
-    gaussians._features_dc.requires_grad_(True)
 
-    optimizer = torch.optim.Adam([gaussians._features_dc], lr=lr, eps=1e-15)
+    geo_scale = args.bake_geometry_lr_scale if args.bake_geometry else 0.0
+    groups = [
+        (gaussians._xyz, 0.0, "xyz"),
+        (gaussians._features_dc, args.style_lr, "f_dc"),
+        (gaussians._features_rest, 0.0, "f_rest"),
+        (gaussians._opacity, opt.opacity_lr * geo_scale, "opacity"),
+        (gaussians._scaling, opt.scaling_lr * geo_scale, "scaling"),
+        (gaussians._rotation, opt.rotation_lr * geo_scale, "rotation"),
+    ]
+    for param, lr, _ in groups:
+        param.requires_grad_(lr > 0.0)
+    # GaussianModel's densify/prune helpers expect self.optimizer to hold exactly
+    # these six named groups, so register it there.
+    gaussians.optimizer = torch.optim.Adam(
+        [{"params": [p], "lr": lr, "name": name} for p, lr, name in groups], lr=0.0, eps=1e-15,
+    )
+    num_points = gaussians.get_xyz.shape[0]
+    gaussians.percent_dense = opt.percent_dense
+    gaussians.xyz_gradient_accum = torch.zeros((num_points, 1), device="cuda")
+    gaussians.denom = torch.zeros((num_points, 1), device="cuda")
+    gaussians.max_radii2D = torch.zeros((num_points,), device="cuda")
 
     cams_by_name = {cam.image_name: cam for cam in scene.getTrainCameras()}
     names = list(stylized.keys())
+    densify = args.bake_geometry and args.bake_densify_until > 0
+    print(f"[bake] geometry={'on' if args.bake_geometry else 'off'} (lr scale {geo_scale}) "
+          f"densify_until={args.bake_densify_until if densify else 0} lambda_edge={args.bake_lambda_edge} "
+          f"start Gaussians={num_points}")
 
-    progress = tqdm(range(1, iterations + 1), desc="Baking style onto Gaussians")
+    progress = tqdm(range(1, args.style_iterations + 1), desc="Baking style onto Gaussians")
     ema_loss = 0.0
     for it in progress:
         name = names[randint(0, len(names) - 1)]
@@ -304,22 +340,38 @@ def bake_and_optimize_color(scene, gaussians, pipe, background, stylized, boxes,
         x0, y0, x1, y1 = boxes[name]
         target = stylized[name][:, y0:y1, x0:x1].contiguous().cuda()
 
-        image = render(cam, gaussians, pipe, background)["render"][:, y0:y1, x0:x1].contiguous()
+        pkg = render(cam, gaussians, pipe, background)
+        image = pkg["render"][:, y0:y1, x0:x1].contiguous()
 
         Ll1 = l1_loss(image, target)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), target.unsqueeze(0))
         else:
             ssim_value = ssim(image, target)
-        loss = (1.0 - lambda_dssim) * Ll1 + lambda_dssim * (1.0 - ssim_value)
+        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
+        if args.bake_lambda_edge > 0.0:
+            loss = loss + args.bake_lambda_edge * l1_loss(sobel_edges(image), sobel_edges(target))
 
         loss.backward()
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+
+        with torch.no_grad():
+            if densify and it <= args.bake_densify_until:
+                visibility_filter = pkg["visibility_filter"]
+                radii = pkg["radii"]
+                gaussians.max_radii2D[visibility_filter] = torch.max(
+                    gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(pkg["viewspace_points"], visibility_filter)
+                if it % args.bake_densification_interval == 0:
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, None, radii)
+
+            gaussians.optimizer.step()
+            gaussians.optimizer.zero_grad(set_to_none=True)
 
         ema_loss = 0.4 * loss.item() + 0.6 * ema_loss
         if it % 10 == 0:
-            progress.set_postfix({"loss": f"{ema_loss:.4f}"})
+            progress.set_postfix({"loss": f"{ema_loss:.4f}", "n": gaussians.get_xyz.shape[0]})
+
+    print(f"[bake] final Gaussians={gaussians.get_xyz.shape[0]}")
 
     ply_path = os.path.join(out_dir, "point_cloud_stylized", "point_cloud.ply")
     gaussians.save_ply(ply_path)
@@ -439,6 +491,23 @@ def main():
     parser.add_argument("--style_iterations", type=int, default=3000,
                          help="Number of appearance-optimization steps for baking the style")
     parser.add_argument("--style_lr", type=float, default=0.01)
+    parser.add_argument("--bake_geometry", action=argparse.BooleanOptionalAction, default=True,
+                         help="While baking, also optimize scaling/rotation/opacity and densify the Gaussians "
+                              "so thin stroke lines can be represented (positions stay frozen). "
+                              "--no-bake_geometry bakes color only.")
+    parser.add_argument("--bake_geometry_lr_scale", type=float, default=0.1,
+                         help="--bake_geometry: multiplier on the training learning rates "
+                              "(--scaling_lr/--rotation_lr/--opacity_lr) used while baking. Kept low because "
+                              "the stylized views disagree with each other, and full-strength geometry "
+                              "updates fit those disagreements as floaters.")
+    parser.add_argument("--bake_densify_until", type=int, default=1500,
+                         help="--bake_geometry: densify (clone/split, prune opacity < 0.005) during the "
+                              "first N baking iterations; 0 disables densification. Thresholds follow "
+                              "--densify_grad_threshold/--percent_dense.")
+    parser.add_argument("--bake_densification_interval", type=int, default=100)
+    parser.add_argument("--bake_lambda_edge", type=float, default=0.5,
+                         help="Weight of the L1 loss between Sobel edges of the render and the stylized "
+                              "target, added to the L1/SSIM baking loss. 0 disables it.")
 
     args = parser.parse_args()
     output_dir = args.output_dir
@@ -523,8 +592,7 @@ def main():
 
     print("=== Steps 4-5: baking + optimizing the stylized color onto the Gaussians ===")
     bake_and_optimize_color(
-        scene, gaussians, pipe, background, stylized, boxes,
-        args.style_iterations, args.style_lr, opt.lambda_dssim, output_dir,
+        scene, gaussians, pipe, background, stylized, boxes, opt, args, output_dir,
     )
 
     print("Done.")
