@@ -8,3 +8,6 @@ diff_rasterization/dist
 tensorboard_3d
 screenshots
 ckpts_backup/
+# local documentation, not tracked
+docs/
+data/*

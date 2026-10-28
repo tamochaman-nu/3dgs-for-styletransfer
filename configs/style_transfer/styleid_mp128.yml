@@ -16,7 +16,7 @@ source_model_path: ckpts/ddpm/ffhq-mp-100000-128-ema09995.pt   # only loaded for
 
 # Anime reference image (relative to this repo's root, or absolute). One style is
 # shared by every view.
-style_image: input/styles/12119910.jpg
+style_image: input/styles/28602580.jpg
 
 # Defaults of the submodule's translate_styleid.py.
 styleid:
