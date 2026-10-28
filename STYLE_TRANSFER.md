@@ -208,29 +208,37 @@ Useful flags:
   extract keypoints for only a subset of the cameras, with no warning, and
   the final reconstruction ends up built from whichever single camera's
   frames happened to register into the largest COLMAP sub-model.
-- `--remove_background` (off by default) — preprocess input photos, after
-  `video_frames`/`bg_removed` assembly but before COLMAP runs, by repainting
-  each photo's background a solid color (`--bg_color`, default white
-  `255,255,255`). Uses `rembg`'s general-purpose `u2net_human_seg` model
-  (`style_pipeline/background_removal.py`), the same `rembg` library
-  `~/anime-face-alignment`'s anime-mode background removal uses (different
-  model: `u2net_human_seg` here vs. `isnet-anime` there). An earlier version
-  of this used BiSeNet (CelebAMask-HQ), which is trained on tightly-cropped,
-  face-centered portraits and produced large misclassified regions
-  (background mistaken for clothing/hair/skin) on this pipeline's actual
-  photos, where the subject is a smaller part of a wider, more distant shot;
-  `u2net_human_seg` has no such framing assumption. Only background pixels
-  are repainted (alpha-composited, not a hard binary mask) — no crop/resize —
-  so camera geometry stays intact for COLMAP/3DGS. Output written to
-  `<output_dir>/bg_removed`.
+- `--remove_background` (off by default) — repaint each reconstructed photo's
+  background a solid color (`--bg_color`, default white `255,255,255`),
+  *after* COLMAP has solved camera poses, not before: the raw, full-texture
+  photos are what COLMAP runs on (background clutter is useful match material
+  for feature matching across widely-separated viewpoints — removing it before
+  matching can starve COLMAP of correspondences and hurt registration), and
+  only the undistorted images COLMAP actually registered (`colmap/images`) get
+  repainted in place before Step 1 training. Uses `rembg`'s general-purpose
+  `u2net_human_seg` model (`style_pipeline/background_removal.py`), the same
+  `rembg` library `~/anime-face-alignment`'s anime-mode background removal
+  uses (different model: `u2net_human_seg` here vs. `isnet-anime` there). An
+  earlier version of this used BiSeNet (CelebAMask-HQ), which is trained on
+  tightly-cropped, face-centered portraits and produced large misclassified
+  regions (background mistaken for clothing/hair/skin) on this pipeline's
+  actual photos, where the subject is a smaller part of a wider, more distant
+  shot; `u2net_human_seg` has no such framing assumption. Only background
+  pixels are repainted (alpha-composited, not a hard binary mask) — no
+  crop/resize — so camera geometry stays intact for COLMAP/3DGS. Output
+  written to `<output_dir>/bg_removed` (a copy, for inspection; the same
+  repainted images are copied into `<output_dir>/colmap/images`).
 - `--skip_colmap` — reuse the existing `<output_dir>/colmap` dataset (and
   `video_frames`, if applicable) exactly as-is, with no re-extraction or
   re-matching. Without this flag, both are always wiped and rebuilt from the
   current input settings, even if they already exist from a previous run.
 - `--skip_training` — reuse an already-trained point cloud from `output/point_cloud`
   (only re-runs rendering, style transfer, and color baking).
-- `--colmap_gpu` — use GPU SIFT in COLMAP (needs a CUDA-enabled colmap build; the
-  image installs the apt package, which is CPU-only, so this is off by default).
+- `--colmap_gpu` — use GPU SIFT in COLMAP. The image builds COLMAP from source
+  with CUDA enabled (`CMAKE_CUDA_ARCHITECTURES=89`, matching
+  `TORCH_CUDA_ARCH_LIST`) rather than installing Ubuntu's apt `colmap` package,
+  which is CPU-only. Off by default (`--no_gpu` still runs fine, just slower);
+  pass this flag to use the GPU.
 - `--bg_color` — also used as the background of the renders that are
   style-transferred and baked against (so regions removed by `--face_only` render
   as this color, not black), and as padding for face crops.
@@ -256,5 +264,6 @@ Useful flags:
 - DDPM/DDIM here runs at a fixed native resolution (typically 256×256), so the
   stylized face crop is upsampled back to its size in the render and is softer than
   the render itself. Outside the face crop, the render is left unstylized.
-- The apt `colmap` package has no GPU SIFT support, so `convert.py` runs
-  `--no_gpu` by default; expect COLMAP to be the slowest step on large image sets.
+- `convert.py` runs `--no_gpu` by default even though the image's COLMAP build
+  supports CUDA SIFT (see `--colmap_gpu` above); pass `--colmap_gpu` explicitly
+  to use it, otherwise expect COLMAP to be the slowest step on large image sets.

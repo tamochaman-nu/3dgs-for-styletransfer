@@ -542,16 +542,27 @@ def main():
         else:
             input_dir = args.input_dir
 
-        if args.remove_background:
-            print("=== Preprocessing: removing backgrounds from input photos ===")
-            input_dir = remove_background_dir(
-                input_dir, os.path.join(output_dir, "bg_removed"), bg_color=args.bg_color,
-            )
-
         prepare_colmap_dataset(
             input_dir, colmap_dir, no_gpu=not args.colmap_gpu, matcher=matcher,
             single_camera=not input_video_is_dir,
         )
+
+        if args.remove_background:
+            # Backgrounds are removed from the undistorted, COLMAP-registered images
+            # (colmap/images), not the raw input photos: pose recovery runs on the
+            # original, textured photos (background clutter is useful match material
+            # for feature matching across widely-separated viewpoints), and only the
+            # images actually used for Step 1 training/Step 2+ rendering get repainted.
+            # remove_background() only repaints pixels in place (no crop/resize), so
+            # this doesn't disturb the camera poses COLMAP just solved for.
+            print("=== Preprocessing: removing backgrounds from reconstructed views ===")
+            bg_removed_dir = remove_background_dir(
+                os.path.join(colmap_dir, "images"), os.path.join(output_dir, "bg_removed"),
+                bg_color=args.bg_color,
+            )
+            colmap_images_dir = os.path.join(colmap_dir, "images")
+            for name in os.listdir(bg_removed_dir):
+                shutil.copyfile(os.path.join(bg_removed_dir, name), os.path.join(colmap_images_dir, name))
 
     dataset = lp.extract(args)
     opt = op.extract(args)
