@@ -11,3 +11,4 @@ ckpts_backup/
 # local documentation, not tracked
 docs/
 data/*
+*.Identifier
