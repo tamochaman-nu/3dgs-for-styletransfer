@@ -1,0 +1,27 @@
+# Style-transfer (Step 3) settings for style_transfer.py --style_config.
+# All paths are relative to cycle-diffusion-for-anime-face/.
+# Every key is required; style_pipeline/ddpm_bridge.py has no fallback defaults.
+
+method: cycle_diffusion   # cycle_diffusion | styleid (see styleid_mp128.yml)
+
+# num_res_blocks=2 / linear-schedule architecture (the bgremoved checkpoints'
+# family per the submodule's pipeline/step_e12_translate_matched_arch.py).
+model_config: ckpts/ddpm/configs/improved_diffusion_custom_face256_linear.yml
+
+source_model_path: ckpts/ddpm/ffhq-bgremoved-040000.pt
+target_model_path: ckpts/ddpm/anime-bgremoved-200000.pt
+
+# CycleDiffusion encode/decode settings, matching the defaults of the submodule's
+# reference script pipeline/step_e12_translate_matched_arch.py.
+sampling:
+  sample_type: ddim      # ddim | ddpm (ddpm requires eta: null)
+  custom_steps: 1000
+  es_steps: 850
+  eta: 0.1
+  refine_steps: 0
+  t_0: null              # null -> 999
+
+face_crop:
+  # Side of the square crop fed to the models, as a multiple of the detected
+  # face bounding box's longer side.
+  scale: 2.0
