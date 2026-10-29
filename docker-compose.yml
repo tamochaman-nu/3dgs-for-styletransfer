@@ -9,6 +9,7 @@ services:
       - ./output:/workspace/output
       - ./configs:/workspace/configs
       - ./cycle-diffusion-for-anime-face/ckpts:/workspace/cycle-diffusion-for-anime-face/ckpts
+      - ${STYLE_REFS_DIR:-./data/style_refs}:/workspace/data/style_refs
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

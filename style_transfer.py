@@ -176,7 +176,7 @@ def parse_color(value: str):
 
 
 def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matcher: str,
-                            single_camera: bool = True):
+                            single_camera: bool = True, camera_per_video: bool = False):
     """Turn the raw multi-view photos in input_dir into a COLMAP dataset (images/ +
     sparse/0) under colmap_dir, in the layout Scene() expects.
 
@@ -188,6 +188,13 @@ def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matche
     rather than erroring -- e.g. a directory of Cam1.../Cam5... frames where even two
     cameras differ by a few pixels (encoder macroblock-padding) ends up registering
     only the subset that happens to match the first image's size, with no warning.
+
+    camera_per_video=True (with single_camera=False) then shares one camera across
+    the frames of each video (grouped by the "{stem}_frame_" prefix from
+    extract_video_frames_dir) instead of one per image: per-image intrinsics let
+    frames with features only near the image center overfit their distortion, which
+    image_undistorter turns into a tiny 0.2x center crop (see convert.py's
+    share_camera_per_video).
 
     Always rebuilds colmap_dir from scratch: this is only called when the caller
     wants a fresh dataset (see --skip_colmap in main()), so a stale sparse/ model
@@ -211,6 +218,8 @@ def prepare_colmap_dataset(input_dir: str, colmap_dir: str, no_gpu: bool, matche
         sys.executable, "convert.py", "-s", colmap_dir, "--matcher", matcher,
         "--single_camera", "1" if single_camera else "0",
     ]
+    if camera_per_video:
+        cmd.append("--camera_per_video")
     if no_gpu:
         cmd.append("--no_gpu")
     print("[colmap] running:", " ".join(cmd))
@@ -544,7 +553,7 @@ def main():
 
         prepare_colmap_dataset(
             input_dir, colmap_dir, no_gpu=not args.colmap_gpu, matcher=matcher,
-            single_camera=not input_video_is_dir,
+            single_camera=not input_video_is_dir, camera_per_video=input_video_is_dir,
         )
 
         if args.remove_background:
