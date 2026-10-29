@@ -12,3 +12,4 @@ ckpts_backup/
 docs/
 data/*
 *.Identifier
+.env

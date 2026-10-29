@@ -20,3 +20,47 @@ services:
               count: all
               capabilities: [gpu]
     ipc: host
+
+  # Face-only COLMAP dataset for other 3DGS stylization methods (export_colmap_face.py,
+  # docs/face_region_and_background.md):
+  #   docker compose run --rm export-colmap-face [SRC] [DST] [extra options]
+  # SRC: style_transfer.py --face_only output under ./output (default EXPORT_FACE_SRC in .env)
+  # DST: new dataset directory created in EXPORT_FACE_DST_DIR (default EXPORT_FACE_DST in .env)
+  export-colmap-face:
+    image: 3dgs-style-transfer:latest
+    user: "${UID:-1000}:${GID:-1000}"
+    entrypoint: ["bash", "/workspace/docker/export_colmap_face.sh"]
+    volumes:
+      - ./output:/workspace/output:ro
+      - ${EXPORT_FACE_DST_DIR:-./output}:/export
+      # Current scripts instead of the copies baked into the image at build time.
+      - ./export_colmap_face.py:/workspace/export_colmap_face.py:ro
+      - ./export_bench.py:/workspace/export_bench.py:ro
+      - ./style_pipeline:/workspace/style_pipeline:ro
+      - ./docker:/workspace/docker:ro
+    environment:
+      - HOME=/tmp
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - EXPORT_FACE_SRC=${EXPORT_FACE_SRC:-}
+      - EXPORT_FACE_DST=${EXPORT_FACE_DST:-}
+      # export_colmap_face.py options. The four FACE_* values must match the
+      # style_transfer.py --face_only run (these are its defaults).
+      - SH_DEGREE=3
+      - BG_COLOR=255,255,255        # fill color outside the face region (R,G,B)
+      - ALPHA_THRESHOLD=0.5         # face mask = rendered alpha >= this
+      - DILATE_PX=4                 # grow the mask so the face edge is not cut
+      - FEATHER_SIGMA=1.5           # soften the mask edge
+      - JPEG_QUALITY=98
+      - FACE_CONF_THRESHOLD=0.5
+      - FACE_HIT_RATIO_THRESHOLD=0.5
+      - FACE_REGION_PERCENTILE=90.0
+      - FACE_REGION_MARGIN=0.6
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
